@@ -10,4 +10,5 @@ dist
 tests
 bench
 docs
+scripts
 .DS_Store
