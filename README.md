@@ -7,6 +7,20 @@ filing text, and XBRL financial facts.
 ![Python 3.11+](https://img.shields.io/badge/python-3.11+-3776AB?style=flat-square)
 ![runtime deps](https://img.shields.io/badge/runtime_dependencies-2-2ea44f?style=flat-square)
 
+## Verification launch kit
+
+| Inspect | Published evidence |
+|---|---|
+| Strongest result | Warm 10-K reads reach **1.1 ms / 0.00 MB**, measured at **138x** the cold fetch |
+| Verification | Wire-level request windows, transferred-byte counters, offline fixtures, and burst tests |
+| Failure boundary | Public EDGAR data only; not an investment recommendation or a complete accounting model |
+| Reproduce | `make test && make bench` |
+| Interactive replay | [Replay the burst and false cache hit](https://asp53826.github.io/#theater) |
+
+> Evidence contract: a class named `RateLimiter` or `Cache` proves nothing by
+> itself. The benchmark measures grants inside a real one-second window and
+> bytes transferred on the wire.
+
 **→ [Interactive results page](https://asp53826.github.io/edgar-mcp/)** — fire a
 burst of tool calls and watch a full token bucket sail through the limit it was
 written to enforce, then see what each EDGAR host can actually validate.
