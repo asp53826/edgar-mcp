@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>edgar-mcp — everything between the model and the wire</title>
+<meta name="description" content="An MCP server over SEC EDGAR: a request pacer that does not burst, a cache split by what each host can actually validate, and windowed filing text.">
+<style>
+:root{
+  --bg:#050814; --panel:#0a1020; --panel2:#0d1628; --line:#20314d;
+  --text:#f4f8ff; --muted:#8da2bf; --cyan:#4de7ff; --blue:#4f8cff;
+  --violet:#9b7bff; --amber:#ffcb66; --green:#68f5ae; --red:#ff647c;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  --sans:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+}
+@media (prefers-color-scheme: light){
+  :root{--bg:#f7fbff;--panel:#fff;--panel2:#eef5ff;--line:#c4d5ea;
+        --text:#0b1730;--muted:#526a88;--cyan:#007d9d;--blue:#145fe0;
+        --violet:#7048d7;--amber:#9b6400;--green:#087a4c;--red:#c83755;}
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
+     line-height:1.6;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1120px;margin:0 auto;padding:0 20px}
+a{color:var(--cyan)}
+header{border-bottom:1px solid var(--line);
+       background:linear-gradient(180deg,var(--panel2),var(--panel))}
+header .wrap{padding:62px 20px 50px}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.18em;
+         color:var(--muted);text-transform:uppercase}
+h1{font-size:clamp(28px,4.8vw,46px);line-height:1.09;margin:14px 0 8px;letter-spacing:-.02em}
+.sub{color:var(--muted);font-size:17px;max-width:63ch;margin:0 0 24px}
+.pills{display:flex;gap:10px;flex-wrap:wrap}
+.pill{font-family:var(--mono);font-size:12px;padding:6px 12px;border-radius:999px;
+      border:1px solid var(--line);background:var(--panel);color:var(--muted)}
+.pill b{color:var(--text)}
+section{padding:54px 0;border-bottom:1px solid var(--line)}
+h2{font-size:clamp(21px,3vw,29px);margin:0 0 6px;letter-spacing:-.01em}
+.lede{color:var(--muted);max-width:74ch;margin:0 0 24px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px}
+.split{display:grid;gap:18px;grid-template-columns:1fr}
+@media(min-width:900px){.split{grid-template-columns:1.4fr 1fr}}
+.ctl{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.ctl label{font-family:var(--mono);font-size:12.5px;color:var(--muted);min-width:118px}
+input[type=range]{flex:1;min-width:150px;accent-color:var(--cyan);height:22px}
+.val{font-family:var(--mono);font-size:13.5px;color:var(--cyan);font-weight:700;
+     min-width:56px;text-align:right}
+button{font-family:var(--mono);font-size:12.5px;padding:8px 14px;border-radius:8px;
+       border:1px solid var(--line);background:var(--panel2);color:var(--text);cursor:pointer}
+button:hover{border-color:var(--cyan)}
+button[aria-pressed=true]{border-color:var(--cyan);color:var(--cyan)}
+.stat{font-family:var(--mono);margin-bottom:15px}
+.stat .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em}
+.stat .v{font-size:22px;font-weight:700;line-height:1.2;font-variant-numeric:tabular-nums}
+.good{color:var(--green)} .bad{color:var(--red)} .mid{color:var(--amber)}
+table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12.5px}
+th,td{padding:7px 9px;text-align:right;border-bottom:1px solid var(--line)}
+th:first-child,td:first-child{text-align:left}
+th{color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.07em}
+svg{display:block;width:100%;height:auto}
+.note{font-size:13.5px;color:var(--muted);margin-top:14px;max-width:78ch}
+.warn{border-left:3px solid var(--red);padding-left:15px}
+.win{border-left:3px solid var(--green);padding-left:15px}
+footer{padding:42px 0 60px;color:var(--muted);font-size:14px}
+code{font-family:var(--mono);font-size:.92em}
+@media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+
+<header><div class="wrap">
+  <div class="eyebrow">asp53826 / edgar-mcp</div>
+  <h1>A full bucket is<br>not a rate limit.</h1>
+  <p class="sub">EDGAR will hand a model a 9 MB filing and then throttle it for
+    asking twice. The interesting part of this server is everything between the
+    model and the wire — and the first version of both the pacer and the cache
+    was wrong in a way that looked fine.</p>
+  <div class="pills">
+    <span class="pill">32 <b>tests</b></span>
+    <span class="pill">warm 10-K read <b>138&times;</b></span>
+    <span class="pill">peak <b>10</b> req in any second</span>
+    <span class="pill">8 <b>MCP tools</b></span>
+    <span class="pill"><a href="https://github.com/asp53826/edgar-mcp">source</a></span>
+  </div>
+</div></header>
+
+<!-- ══ pacer ═════════════════════════════════════════════════════════ -->
+<section>
+  <div class="wrap">
+    <h2>Fire a burst at it</h2>
+    <p class="lede">A model does not issue requests in a smooth stream — it fans out
+      several tool calls at once. That is exactly the shape a token bucket lets
+      through. Press the button and watch both approaches against SEC's ceiling of
+      ten requests per second.</p>
+
+    <div class="split">
+      <div class="card">
+        <div class="ctl">
+          <label for="burst">burst size</label>
+          <input id="burst" type="range" min="5" max="60" value="40" step="1">
+          <span class="val" id="burstv">40</span>
+        </div>
+        <div class="ctl" style="margin-bottom:16px">
+          <button id="fire">fire burst</button>
+          <button id="mode" aria-pressed="false">showing: both</button>
+        </div>
+        <svg id="pacer" viewBox="0 0 640 300" role="img"
+             aria-label="Request timing under a token bucket versus a strict pacer, against the ten per second ceiling"></svg>
+      </div>
+      <div class="card">
+        <div class="stat"><div class="k">token bucket — peak in any 1s</div>
+          <div class="v bad" id="p-bucket">—</div></div>
+        <div class="stat"><div class="k">strict pacer — peak in any 1s</div>
+          <div class="v good" id="p-strict">—</div></div>
+        <div class="stat"><div class="k">SEC ceiling</div>
+          <div class="v">10</div></div>
+        <div class="warn">
+          <p class="note" style="margin:0">A bucket seeded full at capacity 10,
+          refilling at 10/s, <b>averages</b> ten per second — and releases ten
+          instantly, then ten more over the following second. Measured: <b>19 inside
+          one second</b>, 13.3/s sustained.</p>
+        </div>
+        <div class="win" style="margin-top:14px">
+          <p class="note" style="margin:0">Replaced with a strict pacer spacing
+          grants <code>1/rate</code> apart, configured at 9/s rather than 10 because
+          an EDGAR block is sticky. Measured: <b>9.2/s, peak 10</b>.</p>
+        </div>
+      </div>
+    </div>
+    <p class="note">The visualisation runs the two algorithms exactly as written,
+      with no timing jitter, so the bucket hits its theoretical worst case of
+      <code>capacity + rate</code> = 20 in a second. The Python benchmark firing 40
+      real concurrent requests measured 19 — scheduling noise shaves one off. Either
+      way it is roughly double a limit it was written to enforce.</p>
+  </div>
+</section>
+
+<!-- ══ cache ═════════════════════════════════════════════════════════ -->
+<section>
+  <div class="wrap">
+    <h2>The cache that never hit</h2>
+    <p class="lede">The first cache did the standard thing: store the body with its
+      validators, revalidate with <code>If-None-Match</code>, treat a 304 as a hit.
+      It had a hit counter, so it looked like a cache. Every "hit" was a full
+      re-download.</p>
+
+    <div class="split">
+      <div class="card">
+        <table>
+          <thead><tr><th>host</th><th>ETag</th><th>Last-Modified</th><th>can revalidate?</th></tr></thead>
+          <tbody>
+            <tr><td>data.sec.gov</td><td class="bad">absent</td><td class="bad">absent</td>
+              <td class="bad">no — always a full 200</td></tr>
+            <tr><td>www.sec.gov/Archives</td><td class="bad">absent</td>
+              <td class="good">present</td><td class="mid">yes, but unnecessary</td></tr>
+          </tbody>
+        </table>
+        <p class="note"><code>data.sec.gov</code> — submissions, companyfacts,
+          companyconcept, frames — sends no validators at all, so a conditional
+          request there is structurally incapable of ever returning 304. Archives
+          documents are <b>immutable</b>: once an accession is accepted the file
+          never changes, so a cached copy is correct forever and needs no
+          revalidation at all.</p>
+        <svg id="cache" viewBox="0 0 620 250" role="img"
+             aria-label="Bytes transferred on a warm read, before and after splitting the cache by host"></svg>
+      </div>
+      <div class="card">
+        <div class="stat"><div class="k">companyfacts, warm — before</div>
+          <div class="v bad">3.75 MB</div></div>
+        <div class="stat"><div class="k">companyfacts, warm — after</div>
+          <div class="v good">0.00 MB</div></div>
+        <div class="stat"><div class="k">10-K document, warm</div>
+          <div class="v good">0.00 MB / 1.1 ms</div></div>
+        <div class="stat"><div class="k">speedups</div>
+          <div class="v">68&times; · 138&times; · 755&times;</div></div>
+        <p class="note" style="margin-top:4px">Freshness had to be decided per host:
+          immutable for Archives, a one-hour TTL for <code>data.sec.gov</code> because
+          there is no better option. That is a bounded-staleness tradeoff, not a
+          correctness guarantee, and the README says so.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══ ixbrl ═════════════════════════════════════════════════════════ -->
+<section>
+  <div class="wrap">
+    <h2>What a filing looks like before you clean it</h2>
+    <p class="lede">Modern filings are inline XBRL. The document opens with a
+      <code>display:none</code> block holding every tagged fact, so a tag-stripper
+      that only skips <code>&lt;script&gt;</code> and <code>&lt;style&gt;</code>
+      hands the model this as the first characters of Apple's FY2025 10-K.</p>
+    <div class="split">
+      <div class="card">
+        <div style="font-family:var(--mono);font-size:11.5px;color:var(--muted);
+                    margin-bottom:8px">naive strip — first 200 characters</div>
+        <div style="font-family:var(--mono);font-size:12px;background:var(--panel2);
+                    border:1px solid var(--line);border-radius:9px;padding:14px;
+                    color:var(--red);word-break:break-all;line-height:1.5">false2025FY0000320193P1YP1YP1YP1Yhttp://fasb.org/us-gaap/2025#LongTermDebtNoncurrent<wbr>http://fasb.org/us-gaap/2025#LongTermDebtNoncurrent<wbr>http://fasb.org/us-gaap/2025#OtherAssetsNoncurrent…</div>
+        <div style="font-family:var(--mono);font-size:11.5px;color:var(--muted);
+                    margin:16px 0 8px">after skipping ix:hidden and display:none</div>
+        <div style="font-family:var(--mono);font-size:12px;background:var(--panel2);
+                    border:1px solid var(--line);border-radius:9px;padding:14px;
+                    color:var(--green);line-height:1.5">UNITED STATES<br>SECURITIES AND EXCHANGE COMMISSION<br>Washington, D.C. 20549<br><br>FORM 10-K<br><br>☒ ANNUAL REPORT PURSUANT TO SECTION 13 OR 15(d)…</div>
+      </div>
+      <div class="card">
+        <div class="stat"><div class="k">scaffolding removed</div>
+          <div class="v good">11,303 chars</div></div>
+        <div class="stat"><div class="k">source document</div>
+          <div class="v">1.52 MB</div></div>
+        <div class="stat"><div class="k">extracted text</div>
+          <div class="v">206K chars</div></div>
+        <div class="stat"><div class="k">windows to read it all @ 40K</div>
+          <div class="v">6</div></div>
+        <p class="note" style="margin-top:4px">At a default window of 40,000
+          characters, roughly a quarter of the first window was machine tags. Filing
+          text is returned windowed with a <code>next_offset</code> cursor — a 10-K
+          does not belong in a context window whole.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer><div class="wrap">
+  <p><a href="https://github.com/asp53826/edgar-mcp">github.com/asp53826/edgar-mcp</a>
+   &nbsp;·&nbsp; MIT &nbsp;·&nbsp;
+   <a href="https://github.com/asp53826/edgar-mcp/blob/main/DESIGN.md">design notes</a>
+   &nbsp;·&nbsp; <a href="https://github.com/asp53826">more systems</a></p>
+  <p>Header tables and byte counts are measured against live EDGAR. The burst
+     visualisation runs the two algorithms in the browser.</p>
+</div></footer>
+
+<script>
+"use strict";
+const $=s=>document.querySelector(s);
+const RM=matchMedia("(prefers-reduced-motion: reduce)").matches;
+const NS="http://www.w3.org/2000/svg";
+const el=(t,a,x)=>{const n=document.createElementNS(NS,t);
+  for(const k in a)n.setAttribute(k,a[k]); if(x!=null)n.textContent=x; return n;};
+const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+/* ── the two algorithms, as implemented ────────────────────────────── */
+function tokenBucket(n, rate=10, cap=10){
+  // Seeded full — the version that was wrong. `cap` requests leave instantly,
+  // then the refill rate takes over, so one second can hold cap + rate grants.
+  let tokens=cap, now=0; const out=[];
+  for(let i=0;i<n;i++){
+    if(tokens<1){ const need=(1-tokens)/rate; now+=need; tokens+=need*rate; }
+    tokens-=1; out.push(now);
+  }
+  return out;
+}
+function strictPacer(n, rate=9){
+  const iv=1/rate, out=[]; let next=0;
+  for(let i=0;i<n;i++){ out.push(next); next+=iv; }
+  return out;
+}
+const peak1s = ts => Math.max(...ts.map(t=>ts.filter(s=>s>=t && s<t+1).length));
+
+let showMode=0; // 0 both, 1 bucket, 2 pacer
+let anim=null;
+
+function drawPacer(n, progress=1){
+  const s=$("#pacer"); s.textContent="";
+  const W=640,H=300,L=54,R=20,T=26,B=34;
+  const bk=tokenBucket(n), st=strictPacer(n);
+  const tMax=Math.max(st[st.length-1], bk[bk.length-1], 1)*1.06;
+  const X=t=>L+(W-L-R)*t/tMax;
+  const rowY=[T+46, T+150];
+
+  // second gridlines
+  for(let sec=0; sec<=Math.ceil(tMax); sec++){
+    const x=X(sec);
+    s.appendChild(el("line",{x1:x,y1:T,x2:x,y2:H-B,stroke:css("--line"),
+      "stroke-dasharray":"3 6"}));
+    s.appendChild(el("text",{x,y:H-B+16,"text-anchor":"middle",fill:css("--muted"),
+      "font-size":10.5,"font-family":css("--mono")},sec+"s"));
+  }
+
+  const series=[
+    {ts:bk, y:rowY[0], col:css("--red"),   label:"token bucket, seeded full",  show:showMode!==2},
+    {ts:st, y:rowY[1], col:css("--green"), label:"strict pacer @ 9/s",         show:showMode!==1},
+  ];
+
+  for(const ser of series){
+    if(!ser.show) continue;
+    s.appendChild(el("text",{x:L,y:ser.y-22,fill:ser.col,"font-size":12,
+      "font-family":css("--mono")},ser.label));
+    s.appendChild(el("line",{x1:L,y1:ser.y,x2:W-R,y2:ser.y,stroke:css("--line")}));
+    const shown=Math.floor(ser.ts.length*progress);
+    ser.ts.slice(0,shown).forEach((t,i)=>{
+      s.appendChild(el("line",{x1:X(t),y1:ser.y-13,x2:X(t),y2:ser.y+13,
+        stroke:ser.col,"stroke-width":2,opacity:.85}));
+    });
+    // worst 1s window
+    const p=peak1s(ser.ts);
+    let worstT=ser.ts[0], best=0;
+    for(const t of ser.ts){const c=ser.ts.filter(u=>u>=t&&u<t+1).length;
+      if(c>best){best=c;worstT=t;}}
+    if(progress>=1){
+      s.appendChild(el("rect",{x:X(worstT),y:ser.y-20,width:X(worstT+1)-X(worstT),
+        height:40,fill:ser.col,opacity:.14,rx:4}));
+      s.appendChild(el("text",{x:X(worstT)+5,y:ser.y+32,fill:ser.col,"font-size":11,
+        "font-family":css("--mono")},p+" in this second"));
+    }
+  }
+  s.appendChild(el("text",{x:L,y:T-8,fill:css("--muted"),"font-size":11,
+    "font-family":css("--mono")},"each tick is one request leaving for sec.gov"));
+}
+
+function sync(){
+  const n=+$("#burst").value;
+  $("#burstv").textContent=n;
+  $("#p-bucket").textContent=peak1s(tokenBucket(n));
+  $("#p-strict").textContent=peak1s(strictPacer(n));
+  drawPacer(n);
+}
+$("#burst").addEventListener("input",sync);
+$("#mode").addEventListener("click",e=>{
+  showMode=(showMode+1)%3;
+  e.target.textContent="showing: "+["both","token bucket","strict pacer"][showMode];
+  e.target.setAttribute("aria-pressed",showMode!==0);
+  drawPacer(+$("#burst").value);
+});
+$("#fire").addEventListener("click",()=>{
+  if(RM){ sync(); return; }
+  const n=+$("#burst").value; cancelAnimationFrame(anim);
+  const t0=performance.now();
+  (function step(){
+    const p=Math.min((performance.now()-t0)/1400,1);
+    drawPacer(n,p);
+    if(p<1) anim=requestAnimationFrame(step);
+  })();
+});
+sync();
+
+/* ── cache chart ───────────────────────────────────────────────────── */
+(function(){
+  const s=$("#cache"), W=620,H=250,L=170,R=70,T=30,B=16;
+  const DATA=[
+    ["submissions, warm — before", 0.16, css("--red")],
+    ["submissions, warm — after",  0.00, css("--green")],
+    ["companyfacts, warm — before",3.75, css("--red")],
+    ["companyfacts, warm — after", 0.00, css("--green")],
+    ["10-K doc, warm — after",     0.00, css("--green")],
+  ];
+  const max=3.75, w=W-L-R, rowH=(H-T-B)/DATA.length;
+  s.appendChild(el("text",{x:L,y:16,fill:css("--muted"),"font-size":11,
+    "font-family":css("--mono")},"megabytes transferred on a repeat read"));
+  DATA.forEach(([name,mb,col],i)=>{
+    const y=T+i*rowH+rowH*0.2, h=rowH*0.54;
+    s.appendChild(el("text",{x:L-10,y:y+h*0.76,"text-anchor":"end",fill:css("--text"),
+      "font-size":11.5,"font-family":css("--mono")},name));
+    s.appendChild(el("rect",{x:L,y,width:w,height:h,rx:4,fill:css("--panel2")}));
+    const bw=Math.max(mb/max*w, mb>0?3:0);
+    if(bw>0){
+      const r=el("rect",{x:L,y,width:bw,height:h,rx:4,fill:col});
+      s.appendChild(r);
+      if(!RM) r.animate([{width:0},{width:bw}],{duration:800,delay:i*100,
+        fill:"backwards",easing:"cubic-bezier(.2,.8,.3,1)"});
+    }
+    s.appendChild(el("text",{x:L+Math.max(bw,3)+8,y:y+h*0.76,
+      fill:mb>0?col:css("--green"),"font-size":11.5,"font-family":css("--mono"),
+      "font-weight":mb===0?"700":"400"}, mb.toFixed(2)+" MB"));
+  });
+})();
+</script>
+</body>
+</html>

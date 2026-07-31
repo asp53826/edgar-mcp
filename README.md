@@ -7,6 +7,10 @@ filing text, and XBRL financial facts.
 ![Python 3.11+](https://img.shields.io/badge/python-3.11+-3776AB?style=flat-square)
 ![runtime deps](https://img.shields.io/badge/runtime_dependencies-2-2ea44f?style=flat-square)
 
+**→ [Interactive results page](https://asp53826.github.io/edgar-mcp/)** — fire a
+burst of tool calls and watch a full token bucket sail through the limit it was
+written to enforce, then see what each EDGAR host can actually validate.
+
 > EDGAR will happily hand you a 9 MB filing and then throttle you for asking
 > twice. The interesting part of this server is everything between the model and
 > the wire.
