@@ -109,6 +109,19 @@ as a confusing 403 later.
 export EDGAR_USER_AGENT="your-project you@example.com"
 ```
 
+Build and run the local container over stdio:
+
+```bash
+docker build -t edgar-mcp:local .
+docker run --rm -i \
+  -e EDGAR_USER_AGENT="your-project you@example.com" \
+  edgar-mcp:local
+```
+
+The image runs as an unprivileged user and writes its EDGAR cache under that
+user's home directory. Mount `/home/edgar/.cache/edgar-mcp` if the cache should
+survive container restarts.
+
 Add to `claude_desktop_config.json` or `.mcp.json`:
 
 ```json
