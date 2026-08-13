@@ -22,16 +22,16 @@ jobs:
     if: github.event_name != 'pull_request_target'
     permissions:
       contents: read
-    uses: asp53826/portfolio-ops/.github/workflows/repo-medic.yml@v1.0.0
+    uses: asp53826/portfolio-ops/.github/workflows/repo-medic.yml@v1.2.0
     with:
       runtime: python
       runtime-version: "3.12"
       install-command: >-
-        python -m pip install -e '.[dev]'
+        python -m pip install uv && uv sync --all-extras --dev
       test-command: >-
-        python -m pytest -q
+        uv run pytest -q
       verification-command: >-
-        docker build -t edgar-mcp:ci . && python scripts/container_smoke.py
+        docker build -t edgar-mcp:ci . && uv run python scripts/container_smoke.py
 
   documentation-scribe:
     if: github.event_name != 'pull_request_target'
